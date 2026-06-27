@@ -163,9 +163,19 @@ input[type=number]{text-align:right}
 .pin-wrap{display:flex;flex-direction:column;align-items:center;gap:11px;padding:8px 0}
 .pin-wrap input{max-width:175px;text-align:center;letter-spacing:.45em;font-size:20px}
 .pin-error{color:var(--red);font-size:12px;display:none}
-.player-edit-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border2)}
+/* プレイヤーフィルター */
+.p-filter-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.p-filter-bar input{flex:1;min-width:120px;padding:7px 10px;font-size:13px}
+.p-filter-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.btn-sm{background:rgba(0,0,0,.3);border:1px solid var(--border);color:var(--dimcream);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;transition:all .12s;white-space:nowrap}
+.btn-sm:hover{border-color:var(--gold);color:var(--gold)}
+.sel-count{font-size:11px;color:var(--gold);font-weight:700;padding:3px 9px;background:rgba(200,168,75,.12);border:1px solid rgba(200,168,75,.25);border-radius:10px;white-space:nowrap}
+.player-edit-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid var(--border2);transition:opacity .15s}
+.player-edit-row.filtered-out{display:none}
+.player-edit-row.unselected{opacity:.32}
 .player-edit-row:last-child{border-bottom:none}
-.pe-name{font-size:13px;font-weight:600;min-width:70px}
+.pe-cb{width:17px;height:17px;accent-color:var(--gold);cursor:pointer;flex-shrink:0}
+.pe-name{font-size:13px;font-weight:600;min-width:70px;cursor:pointer;user-select:none}
 .pe-input{width:120px;flex:none}
 .pe-cur{font-size:11px;min-width:55px;text-align:right}
 .sess-name-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border2)}
@@ -230,6 +240,8 @@ let DB={players:[],hostPin:"1234",sessionNames:{}};
 let view="today",selPid=null,hostOk=false;
 let atTab="total",todaySi=null,adminSi=null;
 let atSearch="",atMinSess=0;
+let adminFilter="";           // 収支入力欄のプレイヤー検索テキスト
+let adminSelected=new Set();  // チェック済みプレイヤーのpidセット（空=全員対象）
 let charts={};
 
 /* ═══════════════════════════════════════════════
@@ -650,17 +662,28 @@ function renderAdmin(){
     selectOpts+=`<option value="${i}" ${adminSi===i?"selected":""}>${nm}第${i+1}回を編集 (${cnt}人参加済)</option>`;
   }
 
+  // adminSelectedが空の場合は全員選択扱い
+  const allSelected = adminSelected.size===0;
+  const selectedCount = allSelected ? DB.players.length : adminSelected.size;
+
   const playerRows=DB.players.map((p,i)=>{
     const cur=(!isNew&&p.sessions[editSi]!==null&&p.sessions[editSi]!==undefined)?p.sessions[editSi]:null;
     const curText=cur!==null?fmt(cur):"未入力",curCls=cur!==null?(cur>=0?"pos":"neg"):"muted";
-    return`<div class="player-edit-row">
-      <span class="pe-name" style="color:${pcol(i)}">● ${p.name}</span>
+    const isSelected = allSelected || adminSelected.has(p.id);
+    // フィルタにマッチするか（検索文字列）
+    const matchFilter = !adminFilter || p.name.toLowerCase().includes(adminFilter.toLowerCase());
+    return`<div class="player-edit-row${!matchFilter?" filtered-out":""}${!isSelected?" unselected":""}" data-pid="${p.id}">
+      <input type="checkbox" class="pe-cb p-cb" data-pid="${p.id}" ${isSelected?"checked":""}>
+      <span class="pe-name p-cb-label" data-pid="${p.id}" style="color:${pcol(i)}">● ${p.name}</span>
       <input type="number" class="pe-input si-input" data-pid="${p.id}" placeholder="収支（不参加なら空欄）" ${cur!==null?`value="${cur}"`:""}
-        style="color:${cur!==null?(cur>=0?"#39e07a":"#d94040"):"#f0e6c8"}">
+        style="color:${cur!==null?(cur>=0?"#39e07a":"#d94040"):"#f0e6c8"}" ${!isSelected?"disabled":""}>
       <span class="pe-cur ${curCls}">${curText}</span>
       <button class="btn-red rm-player" data-pid="${p.id}">削除</button>
     </div>`;
   }).join("");
+
+  // 表示中（フィルター通過）のプレイヤー数
+  const visibleCount = DB.players.filter(p=>!adminFilter||p.name.toLowerCase().includes(adminFilter.toLowerCase())).length;
 
   const nameRows=Array.from({length:max},(_,i)=>`
   <div class="sess-name-row">
@@ -704,10 +727,20 @@ function renderAdmin(){
     <p style="color:var(--muted);font-size:11px;margin-bottom:13px">
       ${isNew?`第${max+1}回を入力します。不参加のプレイヤーは空欄のままに。`:`第${editSi+1}回を編集します。空欄にすると不参加扱いになります。`}
     </p>
-    ${DB.players.length
-      ?`<div style="margin-bottom:14px">${playerRows}</div>
-        <div class="a-row"><button class="btn btn-gold" id="commit-btn">✅ 第${isNew?max+1:editSi+1}回のデータを確定</button></div>`
-      :`<p style="color:var(--muted);font-size:13px">まずプレイヤーを追加してください</p>`}
+    ${DB.players.length?`
+    <!-- プレイヤーフィルター -->
+    <div class="p-filter-bar">
+      <input type="text" id="p-filter-input" class="filter-input" placeholder="🔍 選手名で絞り込み…" value="${adminFilter.replace(/"/g,"&quot;")}">
+    </div>
+    <div class="p-filter-actions">
+      <button class="btn-sm" id="p-sel-all">✅ 全員選択</button>
+      <button class="btn-sm" id="p-sel-visible">👁 表示中を選択</button>
+      <button class="btn-sm" id="p-sel-none">☐ 全員解除</button>
+      <span class="sel-count">${selectedCount}人 選択中</span>
+    </div>
+    <div style="margin-bottom:14px">${playerRows}</div>
+    <div class="a-row"><button class="btn btn-gold" id="commit-btn">✅ 第${isNew?max+1:editSi+1}回のデータを確定（${selectedCount}人分）</button></div>`
+    :`<p style="color:var(--muted);font-size:13px">まずプレイヤーを追加してください</p>`}
   </div>
 
   ${max>0?`
@@ -961,3 +994,4 @@ function bindEvents(){
 </script>
 </body>
 </html>
+  
